@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hearth And Hollow</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #07080c; overflow: hidden; }
+    canvas { display: block; }
+    #hint {
+      position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+      font: 12px/1.4 system-ui, sans-serif; color: #8d96a8; letter-spacing: .04em;
+      pointer-events: none; user-select: none; opacity: .8;
+    }
+  </style>
+</head>
+<body>
+  <div id="hint">drag to rotate · scroll to zoom · right-drag to pan · double-click to toggle auto-rotate</div>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
