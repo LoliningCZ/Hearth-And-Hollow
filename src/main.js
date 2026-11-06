@@ -14,6 +14,12 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 const params = new URLSearchParams(location.search);
 const SEED = Number(params.get('seed')) || 481516;
 
+// Phones/tablets get lighter rendering settings and the on-screen controls
+const IS_TOUCH =
+  typeof window !== 'undefined' &&
+  ((typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) ||
+    ((navigator.maxTouchPoints || 0) > 0 && 'ontouchstart' in window));
+
 const CELLS = 384;            // world is CELLS x CELLS tiles (was 80x80)
 const HALF = CELLS / 2;
 const CHUNK = 32;             // terrain is built in 32x32 chunks
@@ -147,9 +153,13 @@ const camera = new THREE.PerspectiveCamera(
 
 // Logarithmic depth keeps depth precision high at every distance, which
 // removes z-fighting between nearly-flush surfaces (and the water line).
-const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
+const renderer = new THREE.WebGLRenderer({
+  antialias: !IS_TOUCH,                      // MSAA is costly on phones
+  logarithmicDepthBuffer: true,
+  powerPreference: 'high-performance',
+});
 renderer.setSize(innerWidth, innerHeight);
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(devicePixelRatio, IS_TOUCH ? 1.5 : 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -191,7 +201,7 @@ scene.add(new THREE.HemisphereLight('#d9eeff', '#80905f', 1.5));
 
 const SUN_OFFSET = new THREE.Vector3(-55, 80, 40);
 const SHADOW_R = 64;        // shadow box half-size in world units
-const SHADOW_MAP = 2048;
+const SHADOW_MAP = IS_TOUCH ? 1024 : 2048;
 const sun = new THREE.DirectionalLight('#fff1d2', 2.7);
 sun.castShadow = true;
 sun.shadow.mapSize.set(SHADOW_MAP, SHADOW_MAP);
@@ -737,6 +747,14 @@ function buildWater() {
 // plus a few boxes (cottage walls, fences, furniture)
 // ==================================================
 
+// Where things you can sit on live (shared by the scenery and the interaction system)
+const CAMP = { x: HOME.x + 7, z: HOME.z + 5.5, seats: [[-1.9, 0.6], [1.7, 1.2], [0.2, -2.0]] };
+const STOOLS = [[0.65, -0.32], [1.05, -0.32]];      // cottage-local x, z
+
+// On-screen controls (filled in by the touch UI further down; the keyboard still works as before)
+const touch = { x: 0, y: 0, mag: 0, jump: false, run: false };
+const touchUI = { enabled: false, eBtn: null, joyActive: false };
+
 const CGRID = 8;
 const STEP_UP = 0.3;                 // things lower than this are simply stepped onto
 const colGrid = new Map();
@@ -752,6 +770,12 @@ function addCircle(x, z, r, top = 1e9) {
 }
 function addBox(x0, x1, z0, z1, top = 1e9) {
   colBoxes.push([Math.min(x0, x1), Math.max(x0, x1), Math.min(z0, z1), Math.max(z0, z1), top]);
+}
+
+// Solid volumes for the CAMERA (so orbiting can't carry it into the cottage or other structures)
+const camSolids = [];
+function addSolid(x0, x1, y0, y1, z0, z1) {
+  camSolids.push([x0, x1, y0, y1, z0, z1]);
 }
 
 const colOut = { x: 0, z: 0 };
@@ -1126,6 +1150,7 @@ const hearthFlames = [];
 const door = { pivot: null, angle: 0, dir: 1, x: 0, z: 0 };
 let fireplaceLight = null;
 let houseLight = null;
+let bedBlanket = null;
 
 function buildCottage() {
   const g = new THREE.Group();
@@ -1357,13 +1382,27 @@ function buildCottage() {
   const iz = -D / 2 + T;
   part(1.05, 0.3, 2.0, -1.55, yf + 0.23, iz + 1.1, M.wood);                       // bed frame
   part(0.95, 0.14, 1.9, -1.55, yf + 0.45, iz + 1.1, flat('#b9503f'), { cast: false });
-  part(0.75, 0.1, 0.38, -1.55, yf + 0.54, iz + 0.38, flat('#ece3cd'), { cast: false });
+  part(0.75, 0.1, 0.38, -1.55, yf + 0.54, -1.15, flat('#ece3cd'), { cast: false });
+  // White blanket that gets pulled over him while he sleeps (it grows from nothing in the frame
+  // loop). It's tall enough to sit ABOVE his body, with a turned-down cuff at the chest end.
+  bedBlanket = new THREE.Group();
+  bedBlanket.position.set(-1.55, yf + 0.52, 0.135);
+  bedBlanket.scale.y = 0.001;
+  bedBlanket.visible = false;
+  const quilt = new THREE.Mesh(taper(0.99, 0.92, 0.42, 0.57, 0.52), flat('#f6f2e8'));
+  quilt.position.y = 0.21;
+  quilt.castShadow = true;
+  bedBlanket.add(quilt);
+  const cuff = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.14, 0.1), flat('#e3dcc8'));
+  cuff.position.set(0, 0.38, -0.27);
+  cuff.castShadow = true;
+  bedBlanket.add(cuff);
+  g.add(bedBlanket);
   part(1.1, 0.07, 0.75, 0.85, yf + 0.8, iz + 0.65, M.wood);                       // table
   for (const lx of [0.4, 1.3]) for (const lz of [iz + 0.35, iz + 0.95]) {
     part(0.08, 0.77, 0.08, lx, yf + 0.4, lz, M.darkWood);
   }
-  part(0.34, 0.38, 0.34, 0.2, yf + 0.27, iz + 1.4, M.wood);                       // stools
-  part(0.34, 0.38, 0.34, 0.8, yf + 0.27, iz + 1.6, M.wood);
+  for (const [sx, sz] of STOOLS) part(0.34, 0.38, 0.34, sx, yf + 0.27, sz, M.wood);   // stools
   // shelves either side of the back window (they used to cover it)
   part(1.2, 0.06, 0.3, 1.4, yf + 1.55, iz + 0.15, M.wood);
   for (const [jx, c] of [[0.95, '#6d9fb0'], [1.25, '#c9a24a'], [1.55, '#b9503f'], [1.85, '#7ea65b']]) {
@@ -1438,13 +1477,25 @@ function buildCottage() {
   box(doorW / 2, 2.55, 1.68, 2.15);     // front wall, right of the door
   box(2.2, 3.15, -0.9, 0.1);            // chimney
   box(-3.95, -2.7, -1.1, 0.3, HOME.y + 0.9);   // woodpile (hop on top)
+
+  // camera solids: walls (incl. foundation), chimney and the small outbuildings
+  const wallTop = HOME.y + 3.15;
+  const solid = (x0, x1, z0, z1, y1) => addSolid(hx + x0, hx + x1, HOME.y - 0.7, y1, hz + z0, hz + z1);
+  solid(-2.55, 2.55, -2.15, -1.68, wallTop);
+  solid(-2.55, -2.08, -2.15, 2.15, wallTop);
+  solid(2.08, 2.55, -2.15, 2.15, wallTop);
+  solid(-2.55, -doorW / 2, 1.68, 2.15, wallTop);
+  solid(doorW / 2, 2.55, 1.68, 2.15, wallTop);
+  solid(2.2, 3.15, -0.9, 0.1, HOME.y + 5.6);          // chimney
+  solid(-3.95, -2.7, -1.1, 0.3, HOME.y + 0.9);        // woodpile
+  solid(W / 2 + 0.0, W / 2 + 0.8, D / 2 + 0.15, D / 2 + 0.95, HOME.y + 0.95);   // barrel
+  solid(1.4, 1.6, D / 2 + 0.85, D / 2 + 1.05, HOME.y + 1.55);                   // lantern post
   addCircle(hx + W / 2 + 0.4, hz + D / 2 + 0.55, 0.4, HOME.y + 0.9);   // barrel
   addCircle(hx + 1.5, hz + D / 2 + 0.95, 0.12);          // lantern post
   box(-2.07, -1.02, -1.58, 0.42, HOME.y + 1.05);   // bed
   box(0.3, 1.4, -1.4, -0.65, HOME.y + 1.34);       // table
   box(1.46, 2.08, -1.12, 0.33);                    // fireplace (tall: never stand in it)
-  addCircle(hx + 0.2, hz - 0.28, 0.22, HOME.y + 0.96);   // stools
-  addCircle(hx + 0.8, hz - 0.08, 0.22, HOME.y + 0.96);
+  for (const [sx, sz] of STOOLS) addCircle(hx + sx, hz + sz, 0.22, HOME.y + 0.96);   // stools
 }
 
 // ==================================================
@@ -1500,6 +1551,12 @@ function buildFarm(fx, fz) {
 
   // fence colliders (with the gate gap on the south side)
   const fenceTop = y + 0.8;            // low enough to jump over (or onto)
+  addSolid(fx - 2.35, fx + 2.35, y - 0.1, fenceTop, fz - 1.9, fz - 1.7);          // fence + scarecrow, for the camera
+  addSolid(fx - 2.35, fx - 2.15, y - 0.1, fenceTop, fz - 1.9, fz + 1.9);
+  addSolid(fx + 2.15, fx + 2.35, y - 0.1, fenceTop, fz - 1.9, fz + 1.9);
+  addSolid(fx - 2.35, fx - 0.5, y - 0.1, fenceTop, fz + 1.7, fz + 1.9);
+  addSolid(fx + 0.5, fx + 2.35, y - 0.1, fenceTop, fz + 1.7, fz + 1.9);
+  addSolid(fx + 1.2, fx + 1.4, y - 0.1, y + 2.2, fz - 0.15, fz + 0.05);
   addBox(fx - 2.35, fx + 2.35, fz - 1.9, fz - 1.7, fenceTop);
   addBox(fx - 2.35, fx - 2.15, fz - 1.9, fz + 1.9, fenceTop);
   addBox(fx + 2.15, fx + 2.35, fz - 1.9, fz + 1.9, fenceTop);
@@ -1542,7 +1599,7 @@ function buildCampfire(fx, fz) {
   };
 
   addCircle(fx, fz, 0.6);                        // the fire itself (the stone ring is low enough to step over)
-  for (const [sx, sz] of [[-1.9, 0.6], [1.7, 1.2], [0.2, -2.0]]) {
+  for (const [sx, sz] of CAMP.seats) {
     addCircle(fx + sx, fz + sz, 0.45, groundY(fx + sx, fz + sz) + 0.44);   // log seats: jump onto them
   }
   for (let i = 0; i < 10; i++) {
@@ -1554,7 +1611,8 @@ function buildCampfire(fx, fz) {
   add(1.0, 0.14, 0.2, 0, 0.14, 0, M.darkWood, 1.9);
 
   // log seats
-  for (const [sx, sz, ry] of [[-1.9, 0.6, 0.3], [1.7, 1.2, -0.5], [0.2, -2.0, 1.4]]) {
+  for (const [sx, sz] of CAMP.seats) {
+    const ry = Math.atan2(sx, sz);        // log lies sideways to the fire (like a bench)
     const log = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 1.5, 8), M.wood);
     log.rotation.z = Math.PI / 2;
     log.rotation.y = ry;
@@ -1590,7 +1648,7 @@ function buildCampfire(fx, fz) {
 // ==================================================
 
 const C = {
-  skin: '#e8956a', skinD: '#d4805a', hair: '#4a2f22',
+  skin: '#e8956a', skinD: '#d4805a', hair: '#4a2f22', lash: '#3a2418',
   tunic: '#e4dabd', tunicD: '#d1c5a4', vest: '#5f7a3a',
   kerchief: '#b8452f', belt: '#4a3222', buckle: '#d9b44a', pouch: '#7a5434',
   trouser: '#6b5238', patch: '#9a8456', boot: '#4a3222', bootCuff: '#6b4a30', sole: '#2a1d15',
@@ -1633,6 +1691,9 @@ const player = {
   vx: 0, vz: 0, vy: 0,
   heading: 0, speed: 0, phase: 0,
   grounded: true, swimming: false, climbing: false, climbHold: 0, surfSpeed: 0, r: 0.28,
+  // interactions: 'free' | 'entering' | 'seated' | 'exiting'
+  state: 'free', activity: null, anim: null, seatArmed: false,
+  hatOn: true, nextBlink: 2, blinkUntil: 0, eye: 0, kneeL: null, kneeR: null, lids: [],
 };
 
 function buildPlayer() {
@@ -1675,7 +1736,17 @@ function buildPlayer() {
   hips.add(head);
 
   mk(taper(0.50, 0.64, 0.56, 0.46, 0.56, 2, 0.05), C.skin, head, 0, 1.32 - HY, 0);
+  const lids = [];
   for (const s of [-1, 1]) {
+    // eyelids: a skin-coloured flap that scales down over the eye (blinking / sleeping)
+    const lid = new THREE.Group();
+    lid.position.set(s * 0.15, 1.36 - HY + 0.065, 0.28);
+    lid.scale.y = 0.001;
+    head.add(lid);
+    mk(box(0.175, 0.13, 0.05), C.skin, lid, 0, -0.065, 0);
+    mk(box(0.15, 0.018, 0.014), C.lash, lid, 0, -0.126, 0.028);                       // lash line
+    lids.push(lid);
+
     mk(box(0.16, 0.12, 0.04), C.eyeW, head, s * 0.15, 1.36 - HY, 0.26);              // eye whites
     mk(box(0.07, 0.10, 0.04), C.pupil, head, s * 0.12, 1.36 - HY, 0.275);            // pupils, looking inward
     mk(box(0.07, 0.15, 0.10), C.skinD, head, s * 0.31, 1.30 - HY, 0);                // ears
@@ -1720,22 +1791,32 @@ function buildPlayer() {
   const aR = makeArm(1);
 
   // ---- legs: patched trousers, leather boots ----
+  // legs: thigh + shin with a knee joint, so he can sit down properly
   const makeLeg = (s, patch) => {
-    const leg = new THREE.Group();
+    const leg = new THREE.Group();                 // hip joint
     leg.position.set(s * 0.125, 0, 0);
     hips.add(leg);
-    mk(box(0.17, 0.36, 0.19), C.trouser, leg, 0, -0.19, 0);
-    if (patch) mk(box(0.11, 0.1, 0.02), C.patch, leg, 0, -0.2, 0.1);
-    mk(box(0.19, 0.17, 0.30), C.boot, leg, 0, -0.415, 0.04);
-    mk(box(0.2, 0.04, 0.2), C.bootCuff, leg, 0, -0.34, 0);
-    mk(box(0.21, 0.03, 0.33), C.sole, leg, 0, -0.485, 0.04);
-    return leg;
+    mk(box(0.17, 0.25, 0.19), C.trouser, leg, 0, -0.13, 0);                  // thigh
+    mk(box(0.182, 0.12, 0.205), C.trouser, leg, 0, -0.25, 0);                // knee block (hides the joint gap)
+    const knee = new THREE.Group();
+    knee.position.set(0, -0.25, 0);
+    leg.add(knee);
+    mk(box(0.168, 0.14, 0.188), C.trouser, knee, 0, -0.065, 0);              // shin
+    if (patch) mk(box(0.11, 0.1, 0.02), C.patch, knee, 0, -0.02, 0.1);
+    // the boot's bottom sits INSIDE the sole (-0.235 vs the sole's -0.25..-0.215), so no two
+    // faces share a plane -- they used to, which z-fought on the soles when he lies down
+    mk(box(0.19, 0.155, 0.30), C.boot, knee, 0, -0.1575, 0.04);
+    mk(box(0.2, 0.04, 0.2), C.bootCuff, knee, 0, -0.09, 0);
+    mk(box(0.21, 0.035, 0.33), C.sole, knee, 0, -0.2325, 0.04);
+    return { leg, knee };
   };
 
+  const lL = makeLeg(-1, true);
+  const lR = makeLeg(1, false);
   Object.assign(player, {
     group, hips, head, hat,
     armL: aL.arm, foreL: aL.fore, armR: aR.arm, foreR: aR.fore,
-    legL: makeLeg(-1, true), legR: makeLeg(1, false),
+    legL: lL.leg, kneeL: lL.knee, legR: lR.leg, kneeR: lR.knee, lids,
   });
 
   scene.add(group);
@@ -1836,6 +1917,7 @@ function tryMove(dx, dz) {
 function updatePlayer(dt, t) {
   const p = player;
   const pos = p.group.position;
+  if (updateInteraction(dt)) return;     // sitting / lying / getting up
 
   // input, relative to the camera
   camera.getWorldDirection(forward);
@@ -1847,10 +1929,16 @@ function updatePlayer(dt, t) {
   if (keys.has('KeyS') || keys.has('ArrowDown')) move.sub(forward);
   if (keys.has('KeyD') || keys.has('ArrowRight')) move.add(rightV);
   if (keys.has('KeyA') || keys.has('ArrowLeft')) move.sub(rightV);
-  const wants = move.lengthSq() > 0;
+  const fromKeys = move.lengthSq() > 0;
+  if (touch.mag > 0) {                                   // on-screen joystick: up = away from the camera
+    move.addScaledVector(forward, -touch.y);
+    move.addScaledVector(rightV, touch.x);
+  }
+  const wants = move.lengthSq() > 1e-6;
+  const analog = fromKeys ? 1 : clamp(move.length(), 0, 1);
   if (wants) move.normalize();
 
-  const sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
+  const sprint = keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.run;
   const depth = SEA - surfaceY(pos.x, pos.z);        // > 0 when the ground is under water
   p.swimming = depth > 0.6;
 
@@ -1871,6 +1959,7 @@ function updatePlayer(dt, t) {
   // as walking. The steeper it gets, the slower the climb; no sprinting up cliffs.
   const steep = smoothstep(0.6, 2.6, slopeAhead);            // 0 on flat ground .. 1 on a near-vertical face
   let maxSpeed = wants ? (sprint ? lerp(SPRINT_SPEED, WALK_SPEED, clamp01(steep * 3)) : WALK_SPEED) : 0;
+  if (!fromKeys && wants) maxSpeed *= 0.4 + 0.6 * analog;      // a gentle joystick push walks slower
   if (p.swimming) maxSpeed *= 0.5;
   else if (depth > 0.05) maxSpeed *= 0.8;            // wading
   if (slopeAhead > 0) {
@@ -1924,7 +2013,7 @@ function updatePlayer(dt, t) {
     p.vy = 0;
     p.grounded = false;
   } else if (p.grounded) {
-    if (keys.has('Space')) {
+    if (keys.has('Space') || touch.jump) {
       p.vy = 7.4;
       p.grounded = false;
     } else {
@@ -1959,7 +2048,7 @@ function updatePlayer(dt, t) {
 // ---------- animation ----------
 
 const pose = {
-  legL: 0, legR: 0, armL: 0, armR: 0, foreL: -0.15, foreR: -0.15,
+  legL: 0, legR: 0, kneeL: 0.05, kneeR: 0.05, armL: 0, armR: 0, foreL: -0.15, foreR: -0.15,
   lean: 0, hipY: 0.5, headYaw: 0, headPitch: 0,
 };
 
@@ -1967,11 +2056,27 @@ function animatePlayer(dt, t) {
   const p = player;
   const spd = p.speed;
   const target = {
-    legL: 0, legR: 0, armL: 0, armR: 0, foreL: -0.15, foreR: -0.15,
+    legL: 0, legR: 0, kneeL: 0.05, kneeR: 0.05, armL: 0, armR: 0, foreL: -0.15, foreR: -0.15,
     lean: 0, hipY: 0.5, headYaw: 0, headPitch: 0,
   };
+  const act = p.activity && (p.state === 'entering' || p.state === 'seated') ? p.activity : null;
 
-  if (p.swimming) {
+  if (act && act.kind === 'sit') {
+    const sw = Math.sin(t * 1.7);
+    target.hipY = 0.1;                                    // bottom on the seat
+    target.legL = target.legR = -1.5;                     // thighs forward...
+    target.kneeL = 1.5 + sw * 0.1;                        // ...shins hanging down (and swinging a little)
+    target.kneeR = 1.5 - sw * 0.1;
+    target.armL = target.armR = -0.25;                    // hands resting on the knees
+    target.foreL = target.foreR = -1.1;
+    target.headPitch = 0.04 + Math.sin(t * 0.9) * 0.03;
+    target.headYaw = Math.sin(t * 0.5) * 0.12;
+  } else if (act && act.kind === 'sleep') {
+    target.lean = -Math.PI / 2;                           // lying on his back
+    target.hipY = 0.165 + Math.sin(t * 1.5) * 0.006;      // slow breathing
+    target.armL = target.armR = -0.08;
+    target.foreL = target.foreR = -0.3;
+  } else if (p.swimming) {
     p.phase += dt * (4 + spd * 1.2);
     const s = Math.sin(p.phase);
     target.lean = 0.9;
@@ -1981,10 +2086,13 @@ function animatePlayer(dt, t) {
     target.foreL = target.foreR = -0.2;
     target.legL = Math.sin(p.phase * 2) * 0.35;
     target.legR = -Math.sin(p.phase * 2) * 0.35;
+    target.kneeL = target.kneeR = 0.25;
     target.hipY = 0.5;
   } else if (!p.grounded) {
     target.legL = 0.55;
     target.legR = -0.35;
+    target.kneeL = 0.9;
+    target.kneeR = 0.5;
     target.armL = target.armR = -0.9;
     target.foreL = target.foreR = -0.5;
     target.lean = 0.08;
@@ -1997,6 +2105,8 @@ function animatePlayer(dt, t) {
     target.foreL = target.foreR = -0.35;
     target.legL = -0.55 + s * 0.55;                       // high knee steps
     target.legR = -0.55 - s * 0.55;
+    target.kneeL = 0.7 + s * 0.35;
+    target.kneeR = 0.7 - s * 0.35;
     target.hipY = 0.46;
     target.headPitch = -0.25;
   } else if (spd > 0.3) {
@@ -2012,6 +2122,9 @@ function animatePlayer(dt, t) {
     target.foreR = -(0.2 + amp * 0.5 * Math.max(0, -s));
     target.hipY = 0.5 - 0.5 * (1 - Math.cos(legAmp * Math.abs(s)));   // feet stay planted
     target.lean = 0.12 * amp;
+    const c = Math.cos(p.phase);                           // knees bend as each leg swings forward
+    target.kneeL = 0.12 + legAmp * 1.1 * Math.max(0, -c);
+    target.kneeR = 0.12 + legAmp * 1.1 * Math.max(0, c);
   } else {
     target.armL = Math.sin(t * 1.6) * 0.04;
     target.armR = -Math.sin(t * 1.6) * 0.04;
@@ -2020,11 +2133,17 @@ function animatePlayer(dt, t) {
     target.hipY = 0.5 + Math.sin(t * 2) * 0.006;                       // breathing
   }
 
-  const k = 1 - Math.exp(-dt * 16);
-  for (const key of Object.keys(pose)) pose[key] += (target[key] - pose[key]) * k;
+  // lying down / standing up should be a slow, gentle motion rather than a flip
+  const slow = !!act || p.state === 'exiting';
+  for (const key of Object.keys(pose)) {
+    const rate = key === 'lean' ? (slow ? 6 : 16) : key === 'hipY' && slow ? 9 : 16;
+    pose[key] += (target[key] - pose[key]) * (1 - Math.exp(-dt * rate));
+  }
 
   player.legL.rotation.x = pose.legL;
   player.legR.rotation.x = pose.legR;
+  player.kneeL.rotation.x = pose.kneeL;
+  player.kneeR.rotation.x = pose.kneeR;
   player.armL.rotation.x = pose.armL;
   player.armR.rotation.x = pose.armR;
   player.foreL.rotation.x = pose.foreL;
@@ -2033,7 +2152,683 @@ function animatePlayer(dt, t) {
   player.hips.position.y = pose.hipY;
   player.head.rotation.y = pose.headYaw;
   player.head.rotation.x = pose.headPitch;
+
+  // eyelids: blink now and then, close slowly when asleep
+  const asleep = !!act && act.kind === 'sleep';
+  if (t > p.nextBlink) {
+    p.blinkUntil = t + 0.13;
+    p.nextBlink = t + 2.4 + Math.random() * 3.2;
+  }
+  const eyeGoal = asleep || t < p.blinkUntil ? 1 : 0;
+  p.eye += (eyeGoal - p.eye) * (1 - Math.exp(-dt * (asleep ? 5 : 30)));
+  for (const lid of p.lids) lid.scale.y = Math.max(0.001, p.eye);
+
+  // the hat comes off in bed
+  p.hat.visible = p.hatOn && !asleep;
 }
+
+// ==================================================
+// INTERACTIONS — press E to sit on the campfire logs or the stools
+// at the table, or to sleep in the bed. A little "E" bubble floats
+// over whatever you can use.
+// ==================================================
+
+const interactables = [];
+const TABLE_CENTER = { x: 0.85, z: -1.03 };      // cottage-local, so he can face the table
+
+function buildInteractables() {
+  interactables.length = 0;
+
+  // logs around the campfire: sit facing the fire
+  const fy = groundY(CAMP.x, CAMP.z);
+  for (const [sx, sz] of CAMP.seats) {
+    const x = CAMP.x + sx;
+    const z = CAMP.z + sz;
+    const len = Math.hypot(sx, sz) || 1;
+    interactables.push({
+      kind: 'sit', x, z, px: x, pz: z, baseY: fy, top: fy + 0.44,
+      heading: Math.atan2(-sx, -sz),
+      promptY: fy + 1.3, range: 1.7, indoors: false,
+      exit: { x: x + (sx / len) * 0.95, z: z + (sz / len) * 0.95 },   // stand up facing away from the fire
+    });
+  }
+
+  // stools at the table: sit facing the table
+  const floorY = HOME.y + 0.58;
+  for (const [sx, sz] of STOOLS) {
+    const x = HOME.x + sx;
+    const z = HOME.z + sz;
+    interactables.push({
+      kind: 'sit', x, z, px: x, pz: z, baseY: floorY, top: HOME.y + 0.96,
+      heading: Math.atan2(TABLE_CENTER.x - sx, TABLE_CENTER.z - sz),
+      promptY: HOME.y + 0.96 + 0.85, range: 1.15, indoors: true,
+      exit: { x, z: z + 0.8 },
+    });
+  }
+
+  // the bed: lie on your back with your head on the pillow
+  interactables.push({
+    kind: 'sleep', x: HOME.x - 1.55, z: HOME.z - 0.2, px: HOME.x - 1.55, pz: HOME.z - 0.58,
+    baseY: floorY, top: HOME.y + 1.02, heading: 0,
+    promptY: HOME.y + 1.02 + 1.0, range: 1.7, indoors: true,
+    exit: { x: HOME.x - 0.65, z: HOME.z - 0.45 },
+  });
+}
+
+// the nearest thing he can use right now (or null)
+function findInteractable() {
+  const pos = player.group.position;
+  const inHouse = Math.abs(pos.x - HOME.x) < 2.15 && Math.abs(pos.z - HOME.z) < 1.75;
+  let best = null;
+  let bestD = Infinity;
+  for (const it of interactables) {
+    if (it.indoors && !inHouse) continue;                 // no using the bed through a wall
+    if (Math.abs(pos.y - it.baseY) > 1.2) continue;       // must be on the same floor
+    const d = Math.hypot(pos.x - it.px, pos.z - it.pz);
+    if (d < it.range && d < bestD) {
+      best = it;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+function interact() {
+  const p = player;
+  if (p.state === 'seated') {
+    startExit();
+    return;
+  }
+  if (p.state !== 'free') return;
+  if (!p.grounded || p.swimming || p.climbing) return;
+  const it = findInteractable();
+  if (it) startInteract(it);
+}
+
+function startInteract(it) {
+  const p = player;
+  const pos = p.group.position;
+  const dist = Math.hypot(it.x - pos.x, it.z - pos.z);
+  p.state = 'entering';
+  p.activity = it;
+  p.anim = {
+    t: 0, dur: clamp(0.45 + dist * 0.28, 0.55, 0.95),
+    fx: pos.x, fy: pos.y, fz: pos.z, fh: p.heading,
+    tx: it.x, ty: it.top, tz: it.z, th: it.heading,
+    arc: it.kind === 'sleep' ? 0.55 : 0.32,
+  };
+  p.vx = p.vz = p.vy = 0;
+  p.climbing = false;
+}
+
+function startExit() {
+  const p = player;
+  const pos = p.group.position;
+  const it = p.activity;
+  const floor = surfaceY(it.exit.x, it.exit.z);
+  const c = resolveCollisions(it.exit.x, it.exit.z, p.r, floor);     // never stand up inside a wall or log
+  const ex = c.x;
+  const ez = c.z;
+  p.state = 'exiting';
+  p.anim = {
+    t: 0, dur: 0.55,
+    fx: pos.x, fy: pos.y, fz: pos.z, fh: p.heading,
+    tx: ex, ty: supportY(ex, ez, floor), tz: ez, th: Math.atan2(ex - pos.x, ez - pos.z),
+    arc: 0.25,
+  };
+}
+
+// Runs at the start of updatePlayer. Returns true while interaction owns his movement.
+function updateInteraction(dt) {
+  const p = player;
+  if (p.state === 'free') return false;
+  const pos = p.group.position;
+
+  if (p.state === 'entering' || p.state === 'exiting') {
+    const a = p.anim;
+    a.t += dt;
+    const u = clamp01(a.t / a.dur);
+    const e = u * u * (3 - 2 * u);
+    pos.x = lerp(a.fx, a.tx, e);
+    pos.z = lerp(a.fz, a.tz, e);
+    pos.y = lerp(a.fy, a.ty, e) + Math.sin(Math.PI * u) * a.arc;       // a little hop
+    const d = Math.atan2(Math.sin(a.th - a.fh), Math.cos(a.th - a.fh));
+    p.heading = a.fh + d * e;
+    p.group.rotation.y = p.heading;
+    if (u >= 1) {
+      if (p.state === 'entering') {
+        p.state = 'seated';
+        p.seatArmed = false;
+      } else {
+        p.state = 'free';
+        p.activity = null;
+        p.grounded = true;
+        p.vy = 0;
+      }
+    }
+  } else {
+    // seated / lying: any fresh movement key (or Space) gets him back up
+    const anyMove =
+      keys.has('KeyW') || keys.has('KeyA') || keys.has('KeyS') || keys.has('KeyD') ||
+      keys.has('ArrowUp') || keys.has('ArrowDown') || keys.has('ArrowLeft') || keys.has('ArrowRight') ||
+      keys.has('Space') || touch.mag > 0.35 || touch.jump;
+    if (!anyMove) p.seatArmed = true;           // keys held while sitting down don't count
+    else if (p.seatArmed) startExit();
+  }
+  p.vx = p.vz = 0;
+  p.speed = 0;
+  p.surfSpeed = 0;
+  return true;
+}
+
+// ---------- the "E" bubble and the sleeping z's ----------
+
+const overlayStyle = document.createElement('style');
+overlayStyle.textContent = `
+.interact-prompt, .zzz { position: fixed; left: 0; top: 0; z-index: 20; pointer-events: none; will-change: transform; }
+.interact-prompt { opacity: 0; transition: opacity .16s ease; }
+.interact-prompt.show { opacity: .72; }
+.ip-float { animation: ip-bob 1.1s ease-in-out infinite; }
+.ip-bubble {
+  position: relative; min-width: 40px; height: 40px; padding: 0 10px; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+  background: #fff7e6; color: #3a2a1c; border: 3px solid rgba(58, 42, 28, .85); border-radius: 14px;
+  font: 800 21px/1 "Trebuchet MS", system-ui, sans-serif;
+  box-shadow: 0 3px 0 rgba(58, 42, 28, .25), 0 8px 14px rgba(0, 0, 0, .18);
+  transform: scale(.5); transition: transform .2s cubic-bezier(.3, 1.7, .5, 1);
+}
+.interact-prompt.show .ip-bubble { transform: scale(1); }
+.interact-prompt.press .ip-bubble { transform: scale(.84); transition-duration: .06s; }
+.ip-bubble::after {
+  content: ''; position: absolute; left: 50%; bottom: -11px; width: 12px; height: 12px;
+  background: #fff7e6; border-right: 3px solid #3a2a1c; border-bottom: 3px solid #3a2a1c;
+  transform: translateX(-50%) rotate(45deg);
+}
+@keyframes ip-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+.zzz { opacity: 0; transition: opacity .5s ease; }
+.zzz.show { opacity: 1; }
+.zzz b {
+  position: absolute; left: 0; top: 0; opacity: 0; color: #fff;
+  font: 800 22px/1 "Trebuchet MS", system-ui, sans-serif; text-shadow: 0 2px 0 rgba(30, 30, 60, .45);
+  animation: zzz-rise 2.6s ease-in infinite;
+}
+.zzz b:nth-child(2) { animation-delay: .85s; font-size: 28px; }
+.zzz b:nth-child(3) { animation-delay: 1.7s; font-size: 34px; }
+@keyframes zzz-rise {
+  0% { transform: translate(0, 0) scale(.6); opacity: 0; }
+  18% { opacity: 1; }
+  100% { transform: translate(34px, -70px) scale(1.15); opacity: 0; }
+}`;
+document.head.appendChild(overlayStyle);
+
+const promptEl = document.createElement('div');
+promptEl.className = 'interact-prompt';
+promptEl.innerHTML = '<div class="ip-float"><div class="ip-bubble">E</div></div>';
+document.body.appendChild(promptEl);
+
+const zzzEl = document.createElement('div');
+zzzEl.className = 'zzz';
+zzzEl.innerHTML = '<b>z</b><b>z</b><b>Z</b>';
+document.body.appendChild(zzzEl);
+
+const overlayV = new THREE.Vector3();
+const headV = new THREE.Vector3();
+let promptShown = false;
+let zzzShown = false;
+
+function pressFlash() {
+  promptEl.classList.add('press');
+  setTimeout(() => promptEl.classList.remove('press'), 140);
+}
+
+// project a world point to the screen and park an overlay element there
+function placeOverlay(el, x, y, z) {
+  overlayV.set(x, y, z).project(camera);
+  if (overlayV.z > 1 || overlayV.z < -1) return false;          // behind the camera
+  const sx = (overlayV.x * 0.5 + 0.5) * innerWidth;
+  const sy = (-overlayV.y * 0.5 + 0.5) * innerHeight;
+  el.style.transform = 'translate(' + sx.toFixed(1) + 'px, ' + sy.toFixed(1) + 'px) translate(-50%, -100%)';
+  return true;
+}
+
+function updateOverlays() {
+  const p = player;
+  let showPrompt = false;
+  let showZ = false;
+
+  if (p.state === 'seated') {
+    // no bubble while seated/lying (the HUD already says how to get up); just the sleeping z's
+    if (p.activity.kind === 'sleep') {
+      p.head.getWorldPosition(headV);
+      showZ = placeOverlay(zzzEl, headV.x, headV.y + 0.3, headV.z);
+    }
+  } else if (p.state === 'free' && p.grounded && !p.swimming && !p.climbing) {
+    const it = findInteractable();
+    if (it) showPrompt = placeOverlay(promptEl, it.px, it.promptY, it.pz);
+  }
+
+  if (touchUI.eBtn) touchUI.eBtn.classList.toggle('ready', showPrompt || p.state === 'seated');
+
+  if (showPrompt !== promptShown) {
+    promptShown = showPrompt;
+    promptEl.classList.toggle('show', showPrompt);
+  }
+  if (showZ !== zzzShown) {
+    zzzShown = showZ;
+    zzzEl.classList.toggle('show', showZ);
+  }
+}
+
+// ==================================================
+// TOUCH CONTROLS — a floating joystick on the left, E / jump / run buttons
+// on the right, drag the right side to look around, pinch to zoom.
+// They appear automatically on phones and tablets (or on the first touch).
+// ==================================================
+
+function fullscreenSupported() {
+  const d = document.documentElement;
+  return !!(d && (d.requestFullscreen || d.webkitRequestFullscreen));
+}
+function isFullscreen() {
+  return !!(document.fullscreenElement || document.webkitFullscreenElement);
+}
+function toggleFullscreen(wantOn) {
+  const d = document.documentElement;
+  try {
+    if (wantOn === undefined) wantOn = !isFullscreen();
+    if (wantOn) {
+      const req = d.requestFullscreen
+        ? d.requestFullscreen({ navigationUI: 'hide' })
+        : d.webkitRequestFullscreen && d.webkitRequestFullscreen();
+      Promise.resolve(req).then(() => {
+        // landscape is the intended way to play (Android allows locking it once fullscreen)
+        if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(() => {});
+      }).catch(() => {});
+    } else if (document.exitFullscreen) {
+      document.exitFullscreen();
+    } else if (document.webkitExitFullscreen) {
+      document.webkitExitFullscreen();
+    }
+  } catch (e) { /* fullscreen is a nicety, never fatal */ }
+}
+
+const TOUCH_CSS = `
+html.touch-ui, body.touch-ui {
+  margin: 0; overscroll-behavior: none; -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+}
+body.touch-ui { position: fixed; inset: 0; overflow: hidden; touch-action: none; }
+.touch-ui .game-controls { display: none !important; }
+.touch-ui .game-hud { transform: scale(.72); transform-origin: top left; }
+.touch-root { position: fixed; inset: 0; z-index: 15; pointer-events: none; font-family: "Trebuchet MS", system-ui, sans-serif; }
+.joy-zone { position: fixed; left: 0; top: 0; border-radius: 50%; pointer-events: auto; touch-action: none; }
+.joy-base {
+  position: fixed; left: 0; top: 0; width: 124px; height: 124px; margin: -62px 0 0 -62px; border-radius: 50%;
+  background: rgba(255, 247, 230, .14); border: 3px solid rgba(255, 247, 230, .5);
+  box-shadow: inset 0 0 18px rgba(0, 0, 0, .18); opacity: .5; transition: opacity .15s; pointer-events: none;
+}
+.joy-base.active { opacity: 1; }
+.joy-knob {
+  position: absolute; left: 50%; top: 50%; width: 54px; height: 54px; margin: -27px 0 0 -27px; border-radius: 50%;
+  background: rgba(255, 247, 230, .78); border: 3px solid rgba(58, 42, 28, .75); box-shadow: 0 3px 0 rgba(58, 42, 28, .25);
+}
+.touch-btn {
+  position: absolute; pointer-events: auto; touch-action: none; display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: rgba(255, 247, 230, .6); color: #3a2a1c; border: 3px solid rgba(58, 42, 28, .7);
+  font-weight: 800; box-shadow: 0 4px 0 rgba(58, 42, 28, .25); opacity: .85;
+  transition: transform .08s, background .15s, opacity .15s;
+}
+.touch-btn svg { pointer-events: none; }
+.touch-btn.down { transform: scale(.9); }
+.touch-btn.e-btn {
+  width: 70px; height: 70px; font-size: 32px; opacity: .5;
+  right: calc(env(safe-area-inset-right, 0px) + 116px); bottom: calc(env(safe-area-inset-bottom, 0px) + 42px);
+}
+.touch-btn.e-btn.ready {
+  opacity: 1; background: #fff7e6;
+  box-shadow: 0 0 0 5px rgba(255, 214, 102, .65), 0 4px 0 rgba(58, 42, 28, .25); animation: tb-pulse 1.1s ease-in-out infinite;
+}
+.touch-btn.jump-btn {
+  width: 78px; height: 78px;
+  right: calc(env(safe-area-inset-right, 0px) + 26px); bottom: calc(env(safe-area-inset-bottom, 0px) + 28px);
+}
+.touch-btn.run-btn {
+  width: 52px; height: 52px;
+  right: calc(env(safe-area-inset-right, 0px) + 40px); bottom: calc(env(safe-area-inset-bottom, 0px) + 120px);
+}
+.touch-btn.run-btn.on { background: #ffd666; }
+.touch-btn.fs-btn {
+  width: 40px; height: 40px; opacity: .55;
+  right: calc(env(safe-area-inset-right, 0px) + 12px); top: calc(env(safe-area-inset-top, 0px) + 12px);
+}
+.touch-toast {
+  position: fixed; left: 50%; transform: translateX(-50%); padding: 9px 15px; border-radius: 14px; z-index: 30;
+  background: rgba(58, 42, 28, .82); color: #fff7e6; font: 700 14px "Trebuchet MS", system-ui, sans-serif;
+  text-align: center; pointer-events: none; opacity: 0; transition: opacity .3s; max-width: 80vw;
+}
+.touch-toast.show { opacity: 1; }
+.touch-toast.rotate { top: calc(env(safe-area-inset-top, 0px) + 14px); }
+.touch-toast.tip { bottom: calc(env(safe-area-inset-bottom, 0px) + 18px); }
+@keyframes tb-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }`;
+
+const SVG_JUMP = '<svg width="30" height="30" viewBox="0 0 20 20" fill="none" stroke="#3a2a1c" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13l6-7 6 7"/></svg>';
+const SVG_RUN = '<svg width="26" height="26" viewBox="0 0 20 20" fill="none" stroke="#3a2a1c" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5l5 5-5 5M10 5l5 5-5 5"/></svg>';
+const SVG_FS = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="#3a2a1c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V3h5M12 3h5v5M17 12v5h-5M8 17H3v-5"/></svg>';
+
+function setMeta(name, content) {
+  if (!document.querySelector) return;
+  let m = document.querySelector('meta[name="' + name + '"]');
+  if (!m) {
+    m = document.createElement('meta');
+    m.name = name;
+    document.head.appendChild(m);
+  }
+  m.content = content;
+}
+
+// Joystick geometry (all sizes in css px).
+//   size  : the visible base circle          knob : the thumb circle that moves inside it
+//   R     : how far the knob can travel = (base radius - knob radius), so it never leaves the base
+//   hit   : a little extra forgiveness around the base for fat thumbs
+// Phones keep the compact stick; tablets (shortest side >= 600 css px) get a much bigger one that
+// sits well away from the corner.
+function joyMetrics(w = innerWidth, h = innerHeight) {
+  const tablet = Math.min(w, h) >= 600;
+  if (tablet) {
+    const size = 240;
+    const knob = 100;
+    const restB = Math.round(Math.max(215, h * 0.26));        // centre's distance from the BOTTOM edge
+    return {
+      tablet, size, knob, R: size / 2 - knob / 2 - 4, hit: 16,
+      restX: Math.round(Math.max(190, w * 0.17)), restB, restY: h - restB,
+    };
+  }
+  const size = 124;
+  const knob = 50;
+  return { tablet, size, knob, R: size / 2 - knob / 2 - 3, hit: 12, restX: 96, restB: 96, restY: h - 96 };
+}
+
+// ---------- touch camera ----------
+// ONLY fingers that START in the right half of the screen turn the camera, so the joystick finger
+// (bottom-left) can never be mistaken for a camera finger. OrbitControls never sees a touch finger at
+// all -- it keeps handling the mouse and wheel -- because its multi-finger bookkeeping is what made
+// turning while walking chaotic. One finger = look around; two fingers = look around + pinch zoom
+// (zoom is off while the joystick is held).
+const TOUCH_ROTATE_SPEED = 1.0;
+const lookFingers = new Map();
+
+function orbitCamera(dx, dy, zoom) {
+  const t = controls.target;
+  const ox = camera.position.x - t.x;
+  const oy = camera.position.y - t.y;
+  const oz = camera.position.z - t.z;
+  let r = Math.hypot(ox, oy, oz) || 1;
+  let theta = Math.atan2(ox, oz);
+  let phi = Math.acos(clamp(oy / r, -1, 1));
+  const h = renderer.domElement.clientHeight || innerHeight;
+  theta -= ((2 * Math.PI * dx) / h) * TOUCH_ROTATE_SPEED;                       // same feel as OrbitControls
+  phi = clamp(phi - ((2 * Math.PI * dy) / h) * TOUCH_ROTATE_SPEED, controls.minPolarAngle, controls.maxPolarAngle);
+  if (zoom) r = clamp(r * zoom, controls.minDistance, controls.maxDistance);
+  camera.position.set(
+    t.x + r * Math.sin(phi) * Math.sin(theta),
+    t.y + r * Math.cos(phi),
+    t.z + r * Math.sin(phi) * Math.cos(theta)
+  );
+}
+
+function setupTouchCamera() {
+  const canvas = renderer.domElement;
+  addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'touch' || e.target !== canvas) return;
+    e.stopImmediatePropagation();                                   // OrbitControls never gets a touch finger
+    if (e.clientX < innerWidth * 0.5 || lookFingers.size >= 2) return;   // left half of the screen: not a camera finger
+    lookFingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  }, true);
+  addEventListener('pointermove', (e) => {
+    const f = lookFingers.get(e.pointerId);
+    if (!f) return;
+    if (lookFingers.size === 1) {
+      orbitCamera(e.clientX - f.x, e.clientY - f.y, 0);
+    } else {
+      let other = f;
+      for (const [id, g] of lookFingers) if (id !== e.pointerId) other = g;
+      const prevDist = Math.hypot(f.x - other.x, f.y - other.y);
+      const newDist = Math.hypot(e.clientX - other.x, e.clientY - other.y);
+      const dMidX = (e.clientX - f.x) / 2;                          // the midpoint moves half as far as one finger
+      const dMidY = (e.clientY - f.y) / 2;
+      const zoom = !touchUI.joyActive && prevDist > 8 && newDist > 8 ? prevDist / newDist : 0;
+      orbitCamera(dMidX, dMidY, zoom);
+    }
+    f.x = e.clientX;
+    f.y = e.clientY;
+  }, true);
+  const end = (e) => lookFingers.delete(e.pointerId);
+  addEventListener('pointerup', end, true);
+  addEventListener('pointercancel', end, true);
+}
+
+function buildTouchUI() {
+  if (touchUI.enabled) return;
+  touchUI.enabled = true;
+
+  // real fullscreen-feeling page: no zooming, no scrolling, notch-aware
+  setMeta('viewport', 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover');
+  setMeta('mobile-web-app-capable', 'yes');
+  setMeta('apple-mobile-web-app-capable', 'yes');
+  setMeta('apple-mobile-web-app-status-bar-style', 'black-translucent');
+  setMeta('theme-color', SKY);
+  if (document.documentElement.classList) document.documentElement.classList.add('touch-ui');
+  if (document.body.classList) document.body.classList.add('touch-ui');
+
+  const style = document.createElement('style');
+  style.textContent = TOUCH_CSS;
+  document.head.appendChild(style);
+
+  const root = document.createElement('div');
+  root.className = 'touch-root';
+  document.body.appendChild(root);
+  root.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // ---------- fixed joystick ----------
+  // It never moves, it only reacts to a touch that STARTS on the circle (not the whole left half of
+  // the screen), and the knob can only travel inside the base.
+  const zone = document.createElement('div');
+  zone.className = 'joy-zone';
+  root.appendChild(zone);
+  const base = document.createElement('div');
+  base.className = 'joy-base';
+  const knob = document.createElement('div');
+  knob.className = 'joy-knob';
+  base.appendChild(knob);
+  root.appendChild(base);
+
+  let M = joyMetrics();
+  // Anchored to the screen's bottom-left EDGE with CSS (plus the notch/home-bar safe areas), not to a
+  // position computed from innerHeight, so it can never drift toward the middle of the screen.
+  const anchor = (el, d) => {
+    const half = d / 2;
+    el.style.top = 'auto';
+    el.style.margin = '0';
+    el.style.width = el.style.height = d + 'px';
+    el.style.left = 'calc(env(safe-area-inset-left, 0px) + ' + (M.restX - half) + 'px)';
+    el.style.bottom = 'calc(env(safe-area-inset-bottom, 0px) + ' + (M.restB - half) + 'px)';
+  };
+  const applyMetrics = () => {
+    M = joyMetrics();                                // phone <-> tablet sizing follows the real screen
+    anchor(zone, M.size + 2 * M.hit);
+    anchor(base, M.size);
+    knob.style.width = knob.style.height = M.knob + 'px';
+    knob.style.margin = '-' + M.knob / 2 + 'px 0 0 -' + M.knob / 2 + 'px';
+  };
+  applyMetrics();
+
+  // where the stick really is on screen right now (works whatever the safe areas / page scale are)
+  const geom = () => {
+    const r = zone.getBoundingClientRect();
+    const k = r.width / (M.size + 2 * M.hit);        // 1 normally; keeps the maths right if the page is scaled
+    return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, hitR: r.width / 2, travel: M.R * k };
+  };
+
+  let joyId = null;
+  const resetJoystick = () => {
+    joyId = null;
+    touchUI.joyActive = false;
+    touch.x = touch.y = touch.mag = 0;
+    knob.style.transform = 'translate(0px, 0px)';
+    base.classList.remove('active');
+    controls.enableZoom = true;
+  };
+  const joyUpdate = (e) => {
+    const g = geom();
+    const rx = e.clientX - g.cx;
+    const ry = e.clientY - g.cy;
+    const len = Math.hypot(rx, ry) || 1;
+    const k = len > g.travel ? g.travel / len : 1;   // the knob stops at the inner edge of the base
+    knob.style.transform = 'translate(' + (rx * k).toFixed(1) + 'px, ' + (ry * k).toFixed(1) + 'px)';
+    const mag = Math.min(1, len / g.travel);
+    const dead = 0.14;
+    if (mag < dead) {
+      touch.x = touch.y = touch.mag = 0;
+    } else {
+      const s = (mag - dead) / (1 - dead);           // 0..1 after the dead-zone
+      touch.x = (rx / len) * s;
+      touch.y = (ry / len) * s;
+      touch.mag = s;
+    }
+  };
+  // The joystick's pointer events never go any further than this element.
+  zone.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    if (joyId !== null) return;
+    const g = geom();
+    if (Math.hypot(e.clientX - g.cx, e.clientY - g.cy) > g.hitR) return;     // outside the circle
+    joyId = e.pointerId;
+    touchUI.joyActive = true;                        // while steering: no pinch-zoom
+    if (zone.setPointerCapture) zone.setPointerCapture(e.pointerId);
+    base.classList.add('active');
+    controls.enableZoom = false;
+    joyUpdate(e);
+    e.preventDefault();
+  });
+  zone.addEventListener('pointermove', (e) => {
+    e.stopPropagation();
+    if (e.pointerId !== joyId) return;
+    joyUpdate(e);
+    e.preventDefault();
+  });
+  for (const type of ['pointerup', 'pointercancel']) {
+    zone.addEventListener(type, (e) => {
+      e.stopPropagation();
+      if (e.pointerId === joyId) resetJoystick();
+    });
+  }
+  resetJoystick();
+
+  // ---------- buttons ----------
+  const makeBtn = (cls, html) => {
+    const b = document.createElement('div');
+    b.className = 'touch-btn ' + cls;
+    b.innerHTML = html;
+    root.appendChild(b);
+    return b;
+  };
+  const eBtn = makeBtn('e-btn', 'E');
+  const jumpBtn = makeBtn('jump-btn', SVG_JUMP);
+  const runBtn = makeBtn('run-btn', SVG_RUN);
+  touchUI.eBtn = eBtn;
+
+  eBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    eBtn.classList.add('down');
+    interact();
+    pressFlash();
+  });
+  jumpBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (jumpBtn.setPointerCapture) jumpBtn.setPointerCapture(e.pointerId);
+    touch.jump = true;
+    jumpBtn.classList.add('down');
+  });
+  runBtn.addEventListener('pointerdown', (e) => {         // tap to switch running on / off
+    e.preventDefault();
+    e.stopPropagation();
+    touch.run = !touch.run;
+    runBtn.classList.toggle('on', touch.run);
+    runBtn.classList.add('down');
+  });
+  for (const [btn, up] of [[eBtn, null], [jumpBtn, () => { touch.jump = false; }], [runBtn, null]]) {
+    for (const type of ['pointerup', 'pointercancel']) {
+      btn.addEventListener(type, (e) => {
+        e.stopPropagation();
+        btn.classList.remove('down');
+        if (up) up();
+      });
+    }
+  }
+
+  // ---------- fullscreen ----------
+  if (fullscreenSupported()) {
+    const fsBtn = makeBtn('fs-btn', SVG_FS);
+    fsBtn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      toggleFullscreen();
+    });
+    // go fullscreen on the very first tap (browsers only allow it from a gesture)
+    let tried = false;
+    addEventListener('pointerup', (e) => {
+      if (tried || e.pointerType !== 'touch') return;
+      tried = true;
+      if (!isFullscreen()) toggleFullscreen(true);
+    }, true);
+  }
+
+  // ---------- gentle hints ----------
+  const toast = (cls, text, ms) => {
+    const t = document.createElement('div');
+    t.className = 'touch-toast ' + cls;
+    t.textContent = text;
+    document.body.appendChild(t);
+    return t;
+  };
+  const rotateHint = toast('rotate', 'Rotate your phone sideways for the best view');
+  const updateRotateHint = () => rotateHint.classList.toggle('show', innerHeight > innerWidth);
+  updateRotateHint();
+  const onViewportChange = () => {
+    updateRotateHint();
+    applyMetrics();                                  // phone <-> tablet sizing follows the real screen
+    if (joyId === null) resetJoystick();
+  };
+  addEventListener('resize', onViewportChange);
+  addEventListener('orientationchange', () => setTimeout(onViewportChange, 250));
+
+  // Two fingers at once (thumb on the stick + a finger turning the camera) is exactly what the browser
+  // treats as a pinch / page gesture -- iOS ignores "user-scalable=no" -- so block those outright.
+  for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
+    document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
+  }
+  document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+  document.addEventListener('touchstart', (e) => { if (e.touches && e.touches.length > 1) e.preventDefault(); }, { passive: false });
+
+  // iPhones can't fullscreen a web page; adding it to the home screen does
+  const standalone = (navigator.standalone === true) ||
+    (typeof matchMedia === 'function' && matchMedia('(display-mode: standalone)').matches);
+  if (!fullscreenSupported() && !standalone) {
+    const tip = toast('tip', 'For full screen: Share, then "Add to Home Screen"');
+    setTimeout(() => tip.classList.add('show'), 1500);
+    setTimeout(() => tip.classList.remove('show'), 9000);
+  }
+
+  // look around by dragging the RIGHT half of the screen; two fingers there pinch to zoom
+  setupTouchCamera();
+}
+
+if (IS_TOUCH) buildTouchUI();
+// devices that don't announce themselves as touch: switch the controls on at the first finger
+addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'touch') buildTouchUI();
+}, { capture: true, passive: true });
 
 // ==================================================
 // BUILD EVERYTHING
@@ -2061,8 +2856,9 @@ async function buildWorld() {
     scatterWorld();
     buildCottage();
     buildFarm(HOME.x - 7, HOME.z + 4.5);
-    buildCampfire(HOME.x + 7, HOME.z + 5.5);
+    buildCampfire(CAMP.x, CAMP.z);
     buildPlayer();
+    buildInteractables();
     overlay.remove();
   } catch (err) {
     console.error(err);
@@ -2094,9 +2890,10 @@ hud.innerHTML = `
     <span>SPACE</span> Jump
     <span>DRAG</span> Rotate view
     <span>SCROLL</span> Zoom
+    <span>E</span> Interact
     <span>H</span> Hat
   </div>
-  <div class="game-version">WORLD GENERATION v0.4 · <span id="biome-label"></span></div>
+  <div class="game-version">WORLD GENERATION v0.5 · <span id="biome-label"></span></div>
 `;
 document.body.appendChild(hud);
 const biomeLabel = hud.querySelector('#biome-label');
@@ -2110,7 +2907,11 @@ const keys = new Set();
 const BLOCKED_KEYS = new Set(['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
 addEventListener('keydown', (e) => {
   if (BLOCKED_KEYS.has(e.code)) e.preventDefault();
-  if (e.code === 'KeyH' && !e.repeat && player.hat) player.hat.visible = !player.hat.visible;
+  if (e.code === 'KeyH' && !e.repeat) player.hatOn = !player.hatOn;
+  if (e.code === 'KeyE' && !e.repeat) {
+    interact();
+    pressFlash();
+  }
   keys.add(e.code);
 });
 addEventListener('keyup', (e) => keys.delete(e.code));
@@ -2130,32 +2931,106 @@ const clock = new THREE.Clock();
 let roofOpacity = 1;
 const ROOF_GHOST = 0.07;     // how visible the roof stays while he's indoors
 
+// ---------- camera collision ----------
+// The camera orbits freely. The ONLY rule: it may not end up INSIDE the cottage, the roof, a wall,
+// a fence... (structures only; trees are left alone so orbiting through a forest stays smooth). If it would, it's slid back along the line to the villager until it's free.
+// Things merely standing BETWEEN the villager and the camera don't matter (no "occlusion zoom"):
+// you can still look at him through a doorway or over a wall from above.
+// What's rendered is the adjusted position; the free orbit position is restored after each render,
+// so zoom and angle come back as soon as the way is clear.
+const camDesired = new THREE.Vector3();
+let clipRatio = 1;
+const CAM_M = 0.55;          // keep the camera this far from any surface (the near plane is 0.5)
+
+function cameraBlockedAt(x, y, z, playerInside) {      // structures only
+  for (let i = 0; i < camSolids.length; i++) {
+    const s = camSolids[i];
+    if (x > s[0] - CAM_M && x < s[1] + CAM_M && y > s[2] - 0.2 && y < s[3] + CAM_M && z > s[4] - CAM_M && z < s[5] + CAM_M) return true;
+  }
+  if (!playerInside) {
+    // the cottage is one big solid block (interior + attic + roof) while he's outside it
+    const lx = Math.abs(x - HOME.x);
+    const lz = Math.abs(z - HOME.z);
+    if (lx < ROOF.halfSpan + CAM_M && lz < ROOF.halfD + CAM_M && y > HOME.y + 2.2) {
+      if (y < HOME.y + ROOF.eaveY + (ROOF.halfSpan - lx) * ROOF.tanA + CAM_M) return true;
+    }
+    if (lx < 2.1 && lz < 1.7 && y > HOME.y - 0.7 && y < HOME.y + 3.4) return true;
+  }
+  return false;
+}
+
+function clipCamera(dt, playerInside) {
+  const tx = controls.target.x;
+  const ty = controls.target.y;
+  const tz = controls.target.z;
+  const dx = camera.position.x - tx;
+  const dy = camera.position.y - ty;
+  const dz = camera.position.z - tz;
+  const dist = Math.hypot(dx, dy, dz);
+  camDesired.copy(camera.position);
+
+  let allowed = 1;
+  if (dist > 1.4 && cameraBlockedAt(camera.position.x, camera.position.y, camera.position.z, playerInside)) {
+    // inside something: walk back toward the villager until the camera is in free space
+    allowed = 1.3 / dist;
+    for (let t = dist - 0.25; t > 1.3; t -= 0.25) {
+      const f = t / dist;
+      if (!cameraBlockedAt(tx + dx * f, ty + dy * f, tz + dz * f, playerInside)) {
+        allowed = f;
+        break;
+      }
+    }
+  }
+  // snap out quickly when it would be inside something, ease back once it's clear
+  clipRatio += (allowed - clipRatio) * (1 - Math.exp(-dt * (allowed < clipRatio ? 28 : 5)));
+  camera.position.set(tx + dx * clipRatio, ty + dy * clipRatio, tz + dz * clipRatio);
+}
+
 function frame() {
   const dt = Math.min(clock.getDelta(), 0.1);
   const t = clock.elapsedTime;
 
+  // 1) Apply the player's orbit/zoom FIRST, so that "forward" is the way the camera points THIS
+  //    frame (it used to be read a frame late, which made turning while walking steer wrongly).
+  controls.update();
+  camera.updateMatrixWorld();
+
   updatePlayer(dt, t);
   animatePlayer(dt, t);
 
-  // The camera follows the villager; orbiting and zooming still work around them.
+  // 2) The camera follows the villager RIGIDLY in x/z: both the camera and its pivot move by exactly
+  //    what he moved, so turning while walking pivots around HIM (a smoothed follow made the pivot
+  //    trail behind and the character wobble on screen). Only the height is eased.
   const pos = player.group.position;
-  const lookY = pos.y + (player.swimming ? 0.9 : 1.15);
-  const kxz = 1 - Math.exp(-dt * 14);
+  const sitting = player.state === 'seated' || player.state === 'entering';
+  const lookY = pos.y + (player.swimming ? 0.9
+    : sitting ? (player.activity.kind === 'sleep' ? 0.6 : 0.95)
+    : 1.15);
   const ky = 1 - Math.exp(-dt * 7);
-  const dx = (pos.x - controls.target.x) * kxz;
+  const dx = pos.x - controls.target.x;
   const dy = (lookY - controls.target.y) * ky;
-  const dz = (pos.z - controls.target.z) * kxz;
+  const dz = pos.z - controls.target.z;
   controls.target.x += dx;
   controls.target.y += dy;
   controls.target.z += dz;
   camera.position.x += dx;
   camera.position.y += dy;
   camera.position.z += dz;
-  controls.update();
 
   // never let the camera sink into a hill
   const floor = Math.max(groundY(camera.position.x, camera.position.z), SEA) + 0.7;
   if (camera.position.y < floor) camera.position.y = floor;
+
+  // ...or into the cottage and other structures
+  const playerInside =
+    Math.abs(pos.x - HOME.x) < 2.3 && Math.abs(pos.z - HOME.z) < 1.9 && pos.y > HOME.y + 0.4;
+  clipCamera(dt, playerInside);
+
+  // The overlays are projected with the camera's matrices, which three.js normally only refreshes
+  // inside render() -- one frame late. During a fast spin that made the bubble fly off, so refresh now.
+  camera.updateMatrixWorld(true);
+  camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+  updateOverlays();
 
   // The door swings open as he walks up to it (away from him), and closes behind him.
   if (door.pivot) {
@@ -2197,6 +3072,14 @@ function frame() {
     biomeLabel.textContent = label.toUpperCase();
   }
 
+  // the blanket is pulled up over him once he's settled in bed, and tossed off when he gets up
+  if (bedBlanket) {
+    const goal = player.state === 'seated' && player.activity.kind === 'sleep' ? 1 : 0;
+    const v = bedBlanket.scale.y + (goal - bedBlanket.scale.y) * (1 - Math.exp(-dt * 6));
+    bedBlanket.scale.y = Math.max(0.001, v);
+    bedBlanket.visible = v > 0.02;
+  }
+
   // fireplace
   for (let i = 0; i < hearthFlames.length; i++) {
     hearthFlames[i].scale.y = 1 + Math.sin(t * (9 + i * 2.3) + i) * 0.18;
@@ -2233,6 +3116,7 @@ function frame() {
   waterTexture.offset.y = t * 0.0025;
 
   renderer.render(scene, camera);
+  camera.position.copy(camDesired);      // back to the free orbit position for the next frame
 }
 
 buildWorld();
